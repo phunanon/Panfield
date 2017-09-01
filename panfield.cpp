@@ -1,6 +1,11 @@
+//Working seeds:
+//1504282074
+
+
 #include <SFML/Graphics.hpp> //http://www.sfml-dev.org/tutorials/2.4
 #include <vector>
 #include <iostream> //For output to the terminal
+#include <sstream> //For input through arguments
 
 #define game_W        700
 #define game_H        500
@@ -15,6 +20,7 @@
 #define margin        21  //Margin used in layout
 #define card_peek     5   //Fraction of the card to show peeking from under overlapped cards
 #define font_size     24
+#define stack_draw    4   //How many potentially unseen stack cards should be drawn
 
 
 void pollInput (sf::RenderWindow& window, bool& mouse_down, bool& dragging)
@@ -46,6 +52,7 @@ const uint8_t _type_stock = 0, _type_draw = 1, _type_fountain = 2, _type_pile = 
 struct Card {
     uint8_t num;
     bool facedown = true;
+    float rotation;
 };
 bool operator==(const Card& l, const Card& r) { return (l.num == r.num); }
 bool operator!=(const Card& l, const Card& r) { return (l.num != r.num); }
@@ -73,9 +80,24 @@ Deck::Deck (sf::Vector2f pos_, bool is_stack_, bool allow_drop_, uint8_t type_)
 
 
 
-int main ()
+int main (int argc, char* argv[])
 {
+  //Prepare environment
+    
+    time_t rand_seed;
+    if (argc - 1) {
+        std::stringstream streamer;
+        streamer << argv[1];
+        streamer >> rand_seed;
+    } else {
+        rand_seed = time(NULL);
+    }
+    std::cout << "Game seed: " << rand_seed << std::endl;
+    srand(rand_seed);
+
   //Create window
+    sf::ContextSettings settings;
+    settings.antialiasingLevel = 8;
     sf::RenderWindow window (sf::VideoMode(game_W, game_H), "Panfield");
     sf::VideoMode desktop = sf::VideoMode::getDesktopMode();
     window.setPosition({ (int)(desktop.width/2) - (game_W/2), (int)(desktop.height/2) - (game_H/2) });
@@ -118,7 +140,7 @@ int main ()
     const uint16_t piles_Y = card_H * 1.5;
     bool mouse_down = false, dragging = false;
     sf::Clock game_clock;
-    bool paused = false;
+    bool paused = false, end_game = false;
     uint32_t pause_start = 0, pause_adjust = 0;
     uint8_t cards_in_fountain = 0;
     std::string previous_text;
@@ -230,10 +252,10 @@ int main ()
     Card card;
     for (uint8_t i = 0; i < 52; ++i) {
         card.num = i;
+        card.rotation = (rand() % 4 - 2);
         deck_stock->cards.push_back(card);
     }
     //Randomise stock
-    srand(time(NULL));
     std::random_shuffle(deck_stock->cards.begin(), deck_stock->cards.end());
     //Deal piles
     for (uint8_t p = 0; p < 7; ++p) {
@@ -274,11 +296,38 @@ int main ()
     //Logic
     
         auto mouse_pos = sf::Mouse::getPosition(window);
-        bool hovered = false;  
+        bool hovered = false;
+        
+      //Check if end-game, where the stock is empty, the draw is empty, and all cards are face-up on the piles
+        if (!deck_stock->cards.size() && !deck_draw->cards.size() && !dragging) {
+          //Check all piles are face-up
+            bool all_face_up = true;
+            for (uint8_t p = 0; p < 7; ++p) {
+                for (uint8_t c = 0, clen = deck_piles[p]->cards.size(); c < clen; ++c) {
+                    if (deck_piles[p]->cards[c].facedown) { all_face_up = false; break; }
+                }
+            }
+            if (all_face_up) {
+                end_game = true;
+              //Move a card onto the fountains
+                for (uint8_t f = 0; f < 4; ++f) {
+                    Card top = deck_fountains[f]->cards.back();
+                    for (uint8_t p = 0; p < 7; ++p) {
+                        if (canDrop(deck_piles[p]->cards.back(), top, true)) {
+                            deck_fountains[f]->cards.insert(deck_fountains[f]->cards.end(), deck_piles[p]->cards.begin(), deck_piles[p]->cards.end());
+                            deck_piles[p]->cards.pop_back();
+                            ++cards_in_fountain;
+                            sf::sleep(sf::milliseconds(100));
+                            f = 5; break;
+                        }
+                    }
+                }
+            }
+        }
         
         
     //Drawing
-      //Clear
+      //Chlear
         window.clear();
         
       //Draw table
@@ -294,12 +343,12 @@ int main ()
             bool is_fountain = (decks[d]->type == _type_fountain);
             uint8_t clen = decks[d]->cards.size();
             uint8_t c = 0;
-          //If a stack: draw a hole, select only the last two cards be drawn
+          //If a stack: draw a hole, select only the last X cards be drawn
             spr_hole.setPosition(decks[d]->pos); //Though it may not be drawn, it's still used for drop detection
             spr_hole.move(-margin/2, -margin/2);
             if (decks[d]->is_stack) {
                 window.draw(spr_hole);
-                c = (clen >= 2 ? clen - 2 : 0);
+                c = (clen >= stack_draw ? clen - stack_draw : 0);
             }
           //If stock: check if the mouse is over us, or trying to draw from stock
             if (is_stock) {
@@ -328,7 +377,7 @@ int main ()
                 if (is_stock) { this_card.facedown = true; }
                 selectCardTexture(this_card);
               //Check mouse
-                if (!this_card.facedown && (decks[d]->is_stack ? is_top : true)) {
+                if (!this_card.facedown && (decks[d]->is_stack ? is_top : true) && !end_game) {
                     auto bounds = spr_card.getGlobalBounds();
                     if (c != clen - 1) { bounds.height /= card_peek; }
                     bool over_us = bounds.contains(mouse_pos.x, mouse_pos.y);
@@ -363,12 +412,12 @@ int main ()
                                 if (!fountains_success) {
                                   //Search the piles
                                     for (uint8_t p = 0; p < 7; ++p) {
-                                        if (!deck_piles[p]->cards.size()                //
-                                            && deck_drag->cards.front().num % 13 == 12  // A king to an empty pile
+                                        if (   !deck_piles[p]->cards.size()             //
+                                             && deck_drag->cards.front().num % 13 == 12  // A king to an empty pile
                                             ||
-                                            !deck_piles[p]->cards.back().facedown                             //
-                                            && deck_piles[p]->cards.back() != deck_drag_from->cards.back()    //
-                                            && canDrop(deck_drag->cards.front(), deck_piles[p]->cards.back()) // Normal
+                                                deck_piles[p]->cards.size()                                    //
+                                             && !deck_piles[p]->cards.back().facedown                          //
+                                             && canDrop(deck_drag->cards.front(), deck_piles[p]->cards.back()) // Normal
                                             ) {
                                             deck_drop_to = deck_piles[p];
                                             success = true;
@@ -396,6 +445,13 @@ int main ()
                     }
                 }
               //Draw
+                spr_card.setOrigin(card_W/2, card_H/2);
+                if (decks[d]->type != _type_stock) {
+                    spr_card.setRotation(this_card.rotation);
+                } else {
+                    spr_card.setRotation(0);
+                }
+                spr_card.setOrigin(0, 0);
                 window.draw(spr_card);
             }
           //Check if hovering over an empty deck for drop
