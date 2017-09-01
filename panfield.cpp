@@ -327,7 +327,7 @@ int main (int argc, char* argv[])
         
         
     //Drawing
-      //Chlear
+      //Clear
         window.clear();
         
       //Draw table
